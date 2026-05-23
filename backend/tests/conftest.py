@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -121,6 +122,109 @@ class FakeSupabase:
         return RpcMock()
 
 
+def _make_stub_module(name, attrs):
+    mod = types.ModuleType(name)
+    for key, value in attrs.items():
+        setattr(mod, key, value)
+    return mod
+
+
+def _install_optional_ml_stubs():
+    # Provide import-safe stand-ins for optional ML modules used by backend.main.
+    class _BaseStub:
+        def __init__(self):
+            self._loaded = True
+
+        def load(self):
+            self._loaded = True
+
+    class _ClassifierStub(_BaseStub):
+        def predict(self, _text):
+            return {
+                "category": "Software",
+                "subcategory": "Software Install",
+                "priority": "Medium",
+                "auto_resolve": True,
+                "assigned_team": "Application Support",
+                "confidence": 0.95,
+            }
+
+    class _ClassifierV3Stub:
+        def predict(self, _text):
+            return {
+                "Category": {"prediction": "Software", "confidence": 0.95},
+                "Subcategory": {"prediction": "Software Install", "confidence": 0.95},
+                "priority": {"prediction": "Medium", "confidence": 0.95},
+            }
+
+    class _NERStub(_BaseStub):
+        def extract_entities(self, _text):
+            return [{"text": "VPN", "label": "PRODUCT", "confidence": 0.99}]
+
+    class _DuplicateStub(_BaseStub):
+        def find_semantic_duplicate(self, *_args, **_kwargs):
+            return {
+                "is_duplicate": False,
+                "duplicate_ticket_id": None,
+                "parent_ticket_id": None,
+                "is_potential_duplicate": False,
+                "similarity": 0.0,
+            }
+
+        def check_duplicate(self, *_args, **_kwargs):
+            return self.find_semantic_duplicate()
+
+        def generate_embedding(self, *_args, **_kwargs):
+            return [0.1] * 384
+
+        def add_ticket(self, *_args, **_kwargs):
+            return None
+
+        def is_available(self):
+            return True
+
+    class _RagStub(_BaseStub):
+        def search_knowledge_base(self, *_args, **_kwargs):
+            return None
+
+        def is_available(self):
+            return True
+
+    stubs = {
+        "backend.services.classifier_service": _make_stub_module(
+            "backend.services.classifier_service",
+            {
+                "ClassifierService": _ClassifierStub,
+                "TEAM_MAP": {"Software": "Application Support"},
+                "AUTO_RESOLVE_SUBS": {"Software Install"},
+            },
+        ),
+        "backend.services.classifier_v3": _make_stub_module(
+            "backend.services.classifier_v3",
+            {"classifier_v3": _ClassifierV3Stub()},
+        ),
+        "backend.services.ner_service": _make_stub_module(
+            "backend.services.ner_service",
+            {"NERService": _NERStub},
+        ),
+        "backend.services.duplicate_service": _make_stub_module(
+            "backend.services.duplicate_service",
+            {"DuplicateService": _DuplicateStub},
+        ),
+        "backend.services.rag_service": _make_stub_module(
+            "backend.services.rag_service",
+            {"RagService": _RagStub},
+        ),
+    }
+
+    for module_name, stub_module in stubs.items():
+        if module_name not in sys.modules:
+            sys.modules[module_name] = stub_module
+
+
+_install_optional_ml_stubs()
+
+
 @pytest.fixture
 def fake_db():
     return {
@@ -163,17 +267,19 @@ def fake_supabase(fake_db):
 
 @pytest.fixture(autouse=True)
 def mock_ai_services():
-    with patch("backend.services.classifier_service.ClassifierService.predict") as mock_v1_predict, \
-         patch("backend.services.classifier_service.ClassifierService.load") as mock_v1_load, \
-         patch("backend.services.classifier_v3.ClassifierServiceV3.predict") as mock_v3_predict, \
-         patch("backend.services.ner_service.NERService.extract_entities") as mock_ner_extract, \
-         patch("backend.services.ner_service.NERService.load") as mock_ner_load, \
-         patch("backend.services.duplicate_service.DuplicateService.find_semantic_duplicate") as mock_dup_find, \
-         patch("backend.services.duplicate_service.DuplicateService.check_duplicate") as mock_dup_check, \
-         patch("backend.services.duplicate_service.DuplicateService.generate_embedding") as mock_dup_emb, \
-         patch("backend.services.duplicate_service.DuplicateService.load") as mock_dup_load, \
-         patch("backend.services.rag_service.RagService.search_knowledge_base") as mock_rag_search, \
-         patch("backend.services.rag_service.RagService.load") as mock_rag_load:
+    import backend.main as main
+
+    with patch.object(main.classifier_service, "predict") as mock_v1_predict, \
+         patch.object(main.classifier_service, "load") as mock_v1_load, \
+         patch.object(main.classifier_v3, "predict") as mock_v3_predict, \
+         patch.object(main.ner_service, "extract_entities") as mock_ner_extract, \
+         patch.object(main.ner_service, "load") as mock_ner_load, \
+         patch.object(main.duplicate_service, "find_semantic_duplicate") as mock_dup_find, \
+         patch.object(main.duplicate_service, "check_duplicate") as mock_dup_check, \
+         patch.object(main.duplicate_service, "generate_embedding") as mock_dup_emb, \
+         patch.object(main.duplicate_service, "load") as mock_dup_load, \
+         patch.object(main.rag_service, "search_knowledge_base") as mock_rag_search, \
+         patch.object(main.rag_service, "load") as mock_rag_load:
 
         # Stub default returns
         mock_v1_predict.return_value = {
