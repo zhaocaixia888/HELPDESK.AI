@@ -70,7 +70,14 @@ export const api = {
     }
     try {
       const response = await axios.get(`${API_BASE_URL}/tickets`);
-      return response.data;
+      const data = response?.data;
+
+      // Normalize to the mock shape: an array of tickets
+      if (Array.isArray(data)) return data;
+      if (data && Array.isArray(data.data)) return data.data;
+      if (data && Array.isArray(data.tickets)) return data.tickets;
+
+      return data;
     } catch (error) {
       console.error("Backend unavailable, falling back to mock:", error);
       await delay(500);
@@ -85,7 +92,11 @@ export const api = {
     }
     try {
       const response = await axios.post(`${API_BASE_URL}/tickets/save`, ticketData);
-      return response.data;
+      const created = response?.data;
+
+      // Normalize to mock shape: { data: <createdTicket> }
+      if (created && created.data) return created;
+      return { data: created };
     } catch (error) {
       console.error("Backend unavailable, falling back to mock:", error);
       await delay(800);
